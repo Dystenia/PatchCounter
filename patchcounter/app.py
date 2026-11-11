@@ -124,8 +124,8 @@ async function toggleSource(s){await act(()=>req('/api/sources/'+s.id,'PUT',{dir
 async function removeSource(s){if(confirm('Logquelle entfernen?'))await act(()=>req('/api/sources/'+s.id,'DELETE'))}
 let projects=[];let selectedFile=null;let fileRows=[];
 function closeFile(){selectedFile=null;$('filepanel').style.display='none'}
-function showDetail(id){const e=fileRows.find(x=>x.id===id);if(!e)return;$('detail').style.display='block';$('detailtext').textContent='Datei: '+e.source_file+'\nZeile: '+e.source_line+'\nZeit: '+e.ts+'\nLevel: '+e.level+'\nQuelle: '+e.source+'\nFingerprint: '+e.fingerprint+'\n\n'+e.message}
-async function openFile(path,projectId){selectedFile={path,projectId};$('filename').textContent=path.split(/[\\/]/).pop();$('filepath').textContent=path;$('filepanel').style.display='block';$('detail').style.display='none';await loadFileEvents()}
+function showDetail(id){const e=fileRows.find(x=>x.id===id);if(!e)return;$('detail').style.display='block';$('detailtext').textContent=['Datei: '+e.source_file,'Zeile: '+e.source_line,'Zeit: '+e.ts,'Level: '+e.level,'Quelle: '+e.source,'Fingerprint: '+e.fingerprint,'',e.message].join(String.fromCharCode(10))}
+async function openFile(path,projectId){selectedFile={path,projectId};$('filename').textContent=path.replaceAll(String.fromCharCode(92),'/').split('/').pop();$('filepath').textContent=path;$('filepanel').style.display='block';$('detail').style.display='none';await loadFileEvents()}
 async function loadFileEvents(){if(!selectedFile)return;try{
 const q=new URLSearchParams({path:selectedFile.path,limit:'300'});
 if(selectedFile.projectId!==null)q.set('project_id',selectedFile.projectId);
@@ -139,7 +139,7 @@ tr.style.cursor='pointer';tr.onclick=()=>showDetail(e.id);target.append(tr)}
 }catch(e){msg(e.message)}}
 async function refreshFiles(){try{const q=$('filter').value?'?project_id='+encodeURIComponent($('filter').value):'';
 const files=await req('/api/files'+q);const target=$('files');target.replaceChildren();
-for(const f of files){const b=document.createElement('button');b.style.margin='4px';b.textContent=f.path.split(/[\\/]/).pop()+' · '+f.events+' Meldungen · '+f.errors+' Fehler';b.title=f.path;b.onclick=()=>openFile(f.path,f.project_id);target.append(b)}
+for(const f of files){const b=document.createElement('button');b.style.margin='4px';b.textContent=f.path.replaceAll(String.fromCharCode(92),'/').split('/').pop()+' · '+f.events+' Meldungen · '+f.errors+' Fehler';b.title=f.path;b.onclick=()=>openFile(f.path,f.project_id);target.append(b)}
 if(!files.length)target.textContent='Noch keine importierten Logdateien.';
 }catch(e){msg(e.message)}}
 
