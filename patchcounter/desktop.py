@@ -1,9 +1,10 @@
 """Native PatchCounter desktop interface (optional PySide6 dependency)."""
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QPalette
+from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot, Qt
+from PySide6.QtGui import QColor, QPalette, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFrame, QGridLayout, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -56,6 +57,61 @@ QFrame#metric { background: #1c2b3e; border: 1px solid #344a63; border-radius: 8
 QLabel#metricValue { font-size: 24px; font-weight: bold; color: #f1f6ff; }
 QLabel#metricTitle { color: #a7b8cd; }
 """
+
+
+class EventTimeline(QWidget):
+    """Compact 24-hour bar chart: red errors, amber warnings."""
+
+    def __init__(self):
+        super().__init__()
+        self.setMinimumHeight(155)
+        self.setMaximumHeight(190)
+        self.errors = [0] * 24
+        self.warnings = [0] * 24
+        self.hours = [""] * 24
+
+    def set_series(self, hours, errors, warnings):
+        self.hours = hours
+        self.errors = errors
+        self.warnings = warnings
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(12, 8, -12, -12)
+        painter.fillRect(rect, QColor("#1c2b3e"))
+        painter.setPen(QColor("#a7b8cd"))
+        painter.drawText(rect.adjusted(12, 3, -12, -3),
+                         Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft,
+                         "Ereignisverlauf · letzte 24 Stunden")
+        painter.setPen(QColor("#ef7474"))
+        painter.drawText(rect.right() - 185, rect.top() + 17, "■ Fehler")
+        painter.setPen(QColor("#e7b65b"))
+        painter.drawText(rect.right() - 95, rect.top() + 17, "■ Warnungen")
+        left, right = rect.left() + 30, rect.right() - 12
+        top, bottom = rect.top() + 33, rect.bottom() - 24
+        if right <= left or bottom <= top:
+            return
+        maximum = max(1, *(a + b for a, b in zip(self.errors, self.warnings)))
+        painter.setPen(QPen(QColor("#344a63"), 1))
+        for fraction in (0, 0.5, 1):
+            y = bottom - int((bottom - top) * fraction)
+            painter.drawLine(left, y, right, y)
+        step = (right - left) / 24
+        for i, (errors, warnings) in enumerate(zip(self.errors, self.warnings)):
+            x = left + i * step + step * 0.16
+            width = max(2, step * 0.68)
+            h_error = (bottom - top) * errors / maximum
+            h_warn = (bottom - top) * warnings / maximum
+            painter.fillRect(int(x), int(bottom - h_error), int(width),
+                             int(h_error), QColor("#ef7474"))
+            painter.fillRect(int(x), int(bottom - h_error - h_warn),
+                             int(width), int(h_warn), QColor("#e7b65b"))
+        painter.setPen(QColor("#a7b8cd"))
+        for i in (0, 6, 12, 18, 23):
+            painter.drawText(int(left + i * step), bottom + 17, self.hours[i])
+
 
 class ScanWorker(QObject):
     finished = Signal(object)
@@ -129,6 +185,8 @@ class Desktop(QMainWindow):
             metrics.addWidget(card, i // 3, i % 3)
             self.metric_values[key] = value
         layout.addLayout(metrics)
+        self.timeline = EventTimeline()
+        layout.addWidget(self.timeline)
         layout.addWidget(self.status)
 
         splitter = QSplitter()
@@ -258,6 +316,33 @@ class Desktop(QMainWindow):
         }
         for key, value in values.items():
             self.metric_values[key].setText(str(value))
+        self.update_timeline(db)
+
+    def update_timeline(self, db):
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        hours = [now - timedelta(hours=23 - i) for i in range(24)]
+        errors, warnings = [0] * 24, [0] * 24
+        where = " WHERE project_id=?" if self.selected_project is not None else ""
+        args = (self.selected_project,) if self.selected_project is not None else ()
+        for row in db.execute("SELECT ts, level FROM events" + where, args):
+            try:
+                stamp = datetime.fromisoformat(row["ts"].replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=timezone.utc)
+                stamp = stamp.astimezone(timezone.utc).replace(
+                    minute=0, second=0, microsecond=0
+                )
+            except (ValueError, TypeError, OverflowError):
+                continue
+            index = int((stamp - hours[0]).total_seconds() // 3600)
+            if not 0 <= index < 24:
+                continue
+            if row["level"] in ("ERROR", "CRITICAL"):
+                errors[index] += 1
+            elif row["level"] == "WARNING":
+                warnings[index] += 1
+        self.timeline.set_series([hour.strftime("%H:%M") for hour in hours],
+                                 errors, warnings)
 
     def load_data(self, db):
         project = next((p for p in self.projects if p["id"] == self.selected_project), None)
