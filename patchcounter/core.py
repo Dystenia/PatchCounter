@@ -254,3 +254,22 @@ def file_events(db, path, project_id=None, level=None, search=None, limit=300):
     return [dict(r) for r in db.execute(
         'SELECT * FROM events WHERE ' + ' AND '.join(conditions) + ' ORDER BY source_line DESC,id DESC LIMIT ?',
         (*args,limit))]
+
+def verified_log_path(db, path):
+    """Only allow files already indexed by PatchCounter, never arbitrary API paths."""
+    candidate = Path(path).resolve()
+    if not db.execute('SELECT 1 FROM events WHERE source_file=? LIMIT 1', (str(candidate),)).fetchone():
+        raise ValueError('File is not indexed by PatchCounter')
+    if not candidate.is_file() or candidate.is_symlink():
+        raise FileNotFoundError(str(candidate))
+    return candidate
+
+def read_raw_lines(db, path, start=1, limit=200):
+    from itertools import islice
+    if not 1 <= start <= 10_000_000 or not 1 <= limit <= 500:
+        raise ValueError('Invalid line range')
+    candidate = verified_log_path(db, path)
+    with candidate.open('r', encoding='utf-8-sig', errors='replace') as handle:
+        lines = [{'number':i, 'text':line.rstrip('\\r\\n')[:10000]}
+                 for i,line in enumerate(islice(handle, start-1, start-1+limit),start)]
+    return {'path':str(candidate),'start':start,'lines':lines,'has_more':len(lines)==limit}
