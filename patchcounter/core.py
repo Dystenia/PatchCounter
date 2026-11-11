@@ -100,14 +100,59 @@ def fingerprint(source, message):
     normalized = re.sub(r'\b\d+\b', '<n>', normalized)
     return hashlib.sha256((source + '|' + normalized).encode()).hexdigest()[:16]
 
+TRACEBACK_FINAL = re.compile(r'^[A-Za-z_][\w.]*(?::(?:\s|$)|$)')
+
+def log_records(handle):
+    """Yield (starting line number, parsed event), joining complete Python tracebacks."""
+    lines = enumerate(handle, 1)
+    pending = None
+    while True:
+        if pending is not None:
+            number, line = pending
+            pending = None
+        else:
+            try:
+                number, line = next(lines)
+            except StopIteration:
+                break
+        if line.strip() != 'Traceback (most recent call last):':
+            yield number, parse_line(line)
+            continue
+        block = [line.rstrip('\r\n')]
+        found_frame = False
+        completed = False
+        while len(block) < 200:
+            try:
+                next_number, next_line = next(lines)
+            except StopIteration:
+                break
+            stripped = next_line.strip()
+            if next_line.startswith((' ', '\t')) or not stripped:
+                if stripped.startswith('File ') or stripped.startswith('^'):
+                    found_frame = True
+                block.append(next_line.rstrip('\r\n'))
+            elif found_frame and TRACEBACK_FINAL.match(stripped):
+                block.append(next_line.rstrip('\r\n'))
+                completed = True
+                break
+            else:
+                pending = (next_number, next_line)
+                break
+        if completed:
+            yield number, {'ts': utcnow(), 'level': 'ERROR',
+                           'source': 'python-traceback', 'message': '\n'.join(block)}
+        else:
+            # Incomplete traceback: retain every line rather than losing information.
+            for offset, raw in enumerate(block):
+                yield number + offset, parse_line(raw)
+
 def import_file(db, filename, project_id=None):
     filename = Path(filename).resolve()
     if not filename.is_file():
         raise FileNotFoundError(filename)
     count = 0
     with filename.open('r', encoding='utf-8', errors='replace') as handle, db:
-        for line_number, line in enumerate(handle, 1):
-            event = parse_line(line)
+        for line_number, event in log_records(handle):
             if not event:
                 continue
             event['fingerprint'] = fingerprint(event['source'], event['message'])
