@@ -5,7 +5,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
+    QApplication, QComboBox, QFrame, QGridLayout, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QTextEdit,
     QVBoxLayout, QWidget,
@@ -50,6 +50,11 @@ QScrollBar::handle:vertical { background: #405671; border-radius: 5px; min-heigh
 QScrollBar:horizontal { background: #142031; height: 11px; }
 QScrollBar::handle:horizontal { background: #405671; border-radius: 5px; min-width: 25px; }
 QDialog, QMessageBox, QInputDialog, QFileDialog { background: #111827; }
+QComboBox { background: #1b293b; color: #e5eaf3; border: 1px solid #40536b; border-radius: 6px; padding: 7px; min-width: 200px; }
+QComboBox QAbstractItemView { background: #1b293b; color: #e5eaf3; selection-background-color: #22577c; }
+QFrame#metric { background: #1c2b3e; border: 1px solid #344a63; border-radius: 8px; }
+QLabel#metricValue { font-size: 24px; font-weight: bold; color: #f1f6ff; }
+QLabel#metricTitle { color: #a7b8cd; }
 """
 
 class ScanWorker(QObject):
@@ -97,6 +102,33 @@ class Desktop(QMainWindow):
             button.clicked.connect(callback)
             bar.addWidget(button)
         layout.addLayout(bar)
+        selector = QHBoxLayout()
+        selector.addWidget(QLabel("Projekt:"))
+        self.project_combo = QComboBox()
+        self.project_combo.currentIndexChanged.connect(self.change_project)
+        selector.addWidget(self.project_combo)
+        self.project_info = QLabel("Alle Projekte")
+        selector.addWidget(self.project_info, 1)
+        layout.addLayout(selector)
+        metrics = QGridLayout()
+        self.metric_values = {}
+        for i, (key, title) in enumerate((
+            ("files", "Logdateien"), ("events", "Ereignisse"),
+            ("errors", "Fehler / Kritisch"), ("warnings", "Warnungen"),
+            ("groups", "Fehlergruppen"), ("rate", "Fehlerquote"),
+        )):
+            card = QFrame()
+            card.setObjectName("metric")
+            column = QVBoxLayout(card)
+            label = QLabel(title)
+            label.setObjectName("metricTitle")
+            value = QLabel("–")
+            value.setObjectName("metricValue")
+            column.addWidget(label)
+            column.addWidget(value)
+            metrics.addWidget(card, i // 3, i % 3)
+            self.metric_values[key] = value
+        layout.addLayout(metrics)
         layout.addWidget(self.status)
 
         splitter = QSplitter()
@@ -158,32 +190,74 @@ class Desktop(QMainWindow):
         try:
             with db_connect(DB_PATH) as db:
                 self.projects = list_projects(db)
+                if self.selected_project is not None and not any(
+                    p["id"] == self.selected_project for p in self.projects
+                ):
+                    self.selected_project = None
+                self.project_combo.blockSignals(True)
+                self.project_combo.clear()
+                self.project_combo.addItem("Alle Projekte", None)
+                for p in self.projects:
+                    self.project_combo.addItem(p["name"], p["id"])
+                index = self.project_combo.findData(self.selected_project)
+                self.project_combo.setCurrentIndex(max(index, 0))
+                self.project_combo.blockSignals(False)
+                self.project_table.blockSignals(True)
                 self.fill(self.project_table, [
                     (p["id"], p["name"], p["root"],
                      "Aktiv" if p["enabled"] else "Pausiert", len(p["sources"]))
                     for p in self.projects
                 ])
-                if self.selected_project is not None:
-                    for i, p in enumerate(self.projects):
-                        if p["id"] == self.selected_project:
-                            self.project_table.selectRow(i)
-                            break
-                    else:
-                        self.selected_project = None
+                for i, p in enumerate(self.projects):
+                    if p["id"] == self.selected_project:
+                        self.project_table.selectRow(i)
+                        break
+                self.project_table.blockSignals(False)
                 self.load_data(db)
         except Exception as exc:
             self.error(exc)
+
+    def change_project(self):
+        self.selected_project = self.project_combo.currentData()
+        self.selected_file = None
+        self.raw_view.clear()
+        self.refresh()
 
     def select_project(self):
         row = self.project_table.currentRow()
         if row < 0 or row >= len(self.projects):
             return
-        self.selected_project = self.projects[row]["id"]
-        try:
-            with db_connect(DB_PATH) as db:
-                self.load_data(db)
-        except Exception as exc:
-            self.error(exc)
+        project_id = self.projects[row]["id"]
+        if project_id != self.selected_project:
+            self.selected_project = project_id
+            self.selected_file = None
+            self.raw_view.clear()
+            self.refresh()
+
+    def update_metrics(self, db, groups):
+        project = next((p for p in self.projects if p["id"] == self.selected_project), None)
+        if project:
+            state = "Aktiv" if project["enabled"] else "Pausiert"
+            self.project_info.setText(f'{project["name"]} · {state} · {project["root"]}')
+        else:
+            self.project_info.setText(f'Gesamtübersicht · {len(self.projects)} Projekte')
+        where = " WHERE project_id=?" if self.selected_project is not None else ""
+        args = (self.selected_project,) if self.selected_project is not None else ()
+        counts = db.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN level IN ('ERROR','CRITICAL') THEN 1 ELSE 0 END),0) AS errors, "
+            "COALESCE(SUM(CASE WHEN level='WARNING' THEN 1 ELSE 0 END),0) AS warnings "
+            "FROM events" + where, args
+        ).fetchone()
+        total = counts["total"]
+        errors = counts["errors"]
+        values = {
+            "files": len(self.files), "events": total, "errors": errors,
+            "warnings": counts["warnings"], "groups": len(groups),
+            "rate": f"{errors / total * 100:.1f} %" if total else "0.0 %",
+        }
+        for key, value in values.items():
+            self.metric_values[key].setText(str(value))
 
     def load_data(self, db):
         project = next((p for p in self.projects if p["id"] == self.selected_project), None)
@@ -206,6 +280,7 @@ class Desktop(QMainWindow):
         self.fill(self.file_table, [
             (f["path"], f["events"], f["errors"]) for f in self.files
         ])
+        self.update_metrics(db, groups)
 
     def add_project(self):
         name, ok = QInputDialog.getText(self, "Projekt", "Projektname:")
