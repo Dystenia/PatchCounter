@@ -156,6 +156,10 @@ class Desktop(QMainWindow):
         ):
             button = QPushButton(label)
             button.clicked.connect(callback)
+            if callback == self.toggle_project:
+                self.project_toggle_button = button
+            elif callback == self.toggle_source:
+                self.source_toggle_button = button
             bar.addWidget(button)
         layout.addLayout(bar)
         selector = QHBoxLayout()
@@ -201,6 +205,7 @@ class Desktop(QMainWindow):
 
         self.source_table = self.make_table(["ID", "Verzeichnis", "Muster", "Aktiv"])
         right.addTab(self.source_table, "Logquellen")
+        self.source_table.itemSelectionChanged.connect(self.update_toggle_buttons)
         self.group_table = self.make_table(["Quelle", "Level", "Anzahl", "Beispiel"])
         right.addTab(self.group_table, "Fehlergruppen")
         self.event_table = self.make_table(["Zeit", "Level", "Quelle", "Meldung"])
@@ -366,6 +371,32 @@ class Desktop(QMainWindow):
             (f["path"], f["events"], f["errors"]) for f in self.files
         ])
         self.update_metrics(db, groups)
+        self.update_toggle_buttons()
+
+    def update_toggle_buttons(self):
+        """Color the next action: green to activate, red to pause."""
+        project = next((p for p in self.projects if p["id"] == self.selected_project), None)
+        self.style_toggle(self.project_toggle_button, "Projekt", project)
+        row = self.source_table.currentRow()
+        source = self.sources[row] if 0 <= row < len(self.sources) else None
+        self.style_toggle(self.source_toggle_button, "Quelle", source)
+
+    @staticmethod
+    def style_toggle(button, noun, item):
+        if item is None:
+            button.setText(f"{noun} auswählen")
+            button.setEnabled(False)
+            button.setStyleSheet("")
+            return
+        active = bool(item["enabled"])
+        button.setEnabled(True)
+        button.setText(f"{noun} pausieren" if active else f"{noun} aktivieren")
+        base, hover = ("#9b303b", "#b43d49") if active else ("#22734b", "#2d9160")
+        button.setStyleSheet(
+            f"QPushButton {{ background: {base}; color: white; border: 1px solid {base}; "
+            "border-radius: 6px; padding: 8px 12px; }"
+            f"QPushButton:hover {{ background: {hover}; }}"
+        )
 
     def add_project(self):
         name, ok = QInputDialog.getText(self, "Projekt", "Projektname:")
