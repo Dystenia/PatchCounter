@@ -42,7 +42,7 @@ async def lifespan(app):
         except asyncio.CancelledError:
             pass
 
-app = FastAPI(title="PatchCounter", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="PatchCounter", version="0.3.0", lifespan=lifespan)
 
 class ImportRequest(BaseModel):
     path: str
@@ -86,7 +86,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px so
 .card{border:1px solid #354052;border-radius:8px;padding:12px;margin:10px 0}
 pre{white-space:pre-wrap} .status{min-height:20px}
 </style>
-<h1>🛠 PatchCounter <small>v0.2 · Lokal</small></h1>
+<h1>🛠 PatchCounter <small>v0.3 · Lokal</small></h1>
 <p class="muted">Universelle Projektverwaltung und automatische Log-Überwachung · Nur auf 127.0.0.1 betreiben</p>
 <section class="panel"><h2>Projekte</h2>
 <div class="row"><input id="pname" placeholder="Projektname"><input id="proot" placeholder="Projektverzeichnis, z.B. C:\\Projekte\\App">
