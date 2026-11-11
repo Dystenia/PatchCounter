@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from patchcounter.core import db_connect, import_file, get_events, get_groups, add_patch, parse_line
 
@@ -14,7 +15,7 @@ class CoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'events.log'
             path.write_text('ERROR failed 1\nERROR failed 2\n', encoding='utf-8')
-            with db_connect(Path(folder) / 'db.sqlite') as db:
+            with closing(db_connect(Path(folder) / 'db.sqlite')) as db:
                 self.assertEqual(import_file(db, path), 2)
                 self.assertEqual(import_file(db, path), 0)
                 self.assertEqual(len(get_events(db)), 2)
@@ -22,7 +23,7 @@ class CoreTests(unittest.TestCase):
 
     def test_patch_record(self):
         with tempfile.TemporaryDirectory() as folder:
-            with db_connect(Path(folder) / 'db.sqlite') as db:
+            with closing(db_connect(Path(folder) / 'db.sqlite')) as db:
                 self.assertEqual(add_patch(db, 'abc', 'fixed', '123'), 1)
                 self.assertEqual(db.execute('SELECT commit_sha FROM patches').fetchone()[0], '123')
 
