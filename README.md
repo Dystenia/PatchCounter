@@ -4,7 +4,7 @@
 
 PatchCounter is a lightweight Python/FastAPI tool that monitors local application logs, groups recurring failures and lets developers inspect the original log files. It is a development prototype, not a public-facing observability service.
 
-**Version:** 0.3.0 | **Stack:** Python, FastAPI, SQLite, HTML/JavaScript
+**Version:** 0.4.0 | **Stack:** Python, FastAPI, SQLite, HTML/JavaScript, optional PySide6
 
 ## Features
 
@@ -15,6 +15,19 @@ PatchCounter is a lightweight Python/FastAPI tool that monitors local applicatio
 - Group errors by normalized fingerprints and record patch notes with optional commit references.
 - Browse indexed files, paginate raw log lines and open files in an editor where supported.
 - Persist projects, events and scan state in SQLite; use log generations for common rotation and truncation cases.
+
+## Native desktop GUI (v0.4)
+
+The optional PySide6 application runs directly against the same SQLite database and core functions as the browser UI. It does not require Uvicorn.
+
+~~~powershell
+.\\.venv\\Scripts\\python.exe -m pip install -r requirements-desktop.txt
+.\\.venv\\Scripts\\python.exe -m patchcounter.desktop
+~~~
+
+Desktop features: dark theme, project selector, project/source enable controls, indexed log preview, summary metrics and a 24-hour error/warning timeline. Scanning runs in a background Qt thread.
+
+The desktop interface and the browser interface share the database; avoid running multiple independent scanners against the same active log sources simultaneously. The 24-hour chart reads event timestamps and currently treats timezone-naive timestamps as UTC.
 
 ## Architecture
 
@@ -33,6 +46,7 @@ Browser UI (HTML/JavaScript)
 ~~~
 
 - **patchcounter/app.py** — API endpoints, embedded UI, background polling.
+- **patchcounter/desktop.py** — optional native PySide6 interface.
 - **patchcounter/core.py** — log parsing, grouping, scanner, SQLite schema and migration.
 - **tests/** — unit and regression tests for import, projects, raw viewer, and rotation.
 - **start_windows.bat** — Windows convenience launcher.
@@ -90,8 +104,9 @@ GitHub Actions runs syntax checks and the unit suite on pushes and pull requests
 - Traceback grouping supports common standalone Python tracebacks, not every logging format.
 - Historical event line numbers may no longer match the **current** file after rotation; raw viewing opens the current file.
 - Fingerprints normalize UUIDs and numbers; they do not establish root causes.
-- No remote agents, automated code fixes, or native Windows folder chooser.
+- No remote agents or automated code fixes. The native GUI supports folder selection but not full feature parity with the web interface.
+- The desktop timeline currently scans stored event timestamps and may become slow with very large databases.
 
 ## Status
 
-**v0.3.0 — functional development prototype.** The focus is transparent behavior, reproducible tests and explicit limitations.
+**v0.4.0 — functional development prototype with optional native desktop interface.** The focus is transparent behavior, reproducible tests and explicit limitations.
