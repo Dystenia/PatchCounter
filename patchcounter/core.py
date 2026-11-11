@@ -223,17 +223,20 @@ def scan_sources(db, max_files=2000):
     return {'imported':added,'scanned':seen,'errors':errors,'limited':False}
 
 def list_log_files(db, project_id=None):
-    where = 'WHERE e.project_id=?' if project_id is not None else ''
-    args = (project_id,) if project_id is not None else ()
-    return [dict(r) for r in db.execute("""
+    conditions = ['e.source_file IS NOT NULL']
+    args = []
+    if project_id is not None:
+        conditions.append('e.project_id=?')
+        args.append(project_id)
+    sql = """
         SELECT e.source_file AS path, e.project_id, p.name AS project_name,
                COUNT(*) AS events, SUM(CASE WHEN e.level IN ('ERROR','CRITICAL') THEN 1 ELSE 0 END) AS errors,
                MAX(e.id) AS latest_event_id
         FROM events e LEFT JOIN projects p ON p.id=e.project_id
-        """ + where + """
-        AND e.source_file IS NOT NULL
+        WHERE """ + ' AND '.join(conditions) + """
         GROUP BY e.source_file,e.project_id ORDER BY latest_event_id DESC LIMIT 500
-    """.replace('AND e.source_file IS NOT NULL', ('AND' if where else 'WHERE') + ' e.source_file IS NOT NULL'), args)]
+    """
+    return [dict(r) for r in db.execute(sql, args)]
 
 def file_events(db, path, project_id=None, level=None, search=None, limit=300):
     limit = min(max(int(limit), 1), 500)
