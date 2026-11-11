@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -17,6 +18,39 @@ from .core import (
     update_source,
 )
 
+
+DARK_STYLE = """
+QWidget { background: #111827; color: #e5eaf3; font-size: 13px; }
+QMainWindow { background: #0b1220; }
+QPushButton { background: #24364d; border: 1px solid #3b5069; border-radius: 6px;
+              padding: 8px 12px; color: #eef4ff; }
+QPushButton:hover { background: #315276; border-color: #5c83b0; }
+QPushButton:pressed { background: #1b2c41; }
+QPushButton:disabled { color: #758398; background: #1b2534; }
+QTableWidget { background: #151f2e; alternate-background-color: #1b2839;
+               gridline-color: #2d3a4d; border: 1px solid #324158;
+               border-radius: 6px; selection-background-color: #22577c;
+               selection-color: #ffffff; }
+QHeaderView::section { background: #243246; color: #dce8f8;
+                       padding: 7px; border: 0; border-right: 1px solid #35465c;
+                       border-bottom: 1px solid #35465c; }
+QTableCornerButton::section { background: #243246; border: 0; }
+QTabWidget::pane { border: 1px solid #34445b; background: #151f2e; }
+QTabBar::tab { background: #1b293b; color: #aebdd1; padding: 10px 15px;
+               border: 1px solid #34445b; border-bottom: 0; }
+QTabBar::tab:selected { background: #263e58; color: #ffffff; }
+QTabBar::tab:hover { background: #304761; }
+QTextEdit, QLineEdit { background: #101a28; color: #e5eaf3;
+                      border: 1px solid #3a4b61; border-radius: 5px;
+                      padding: 5px; selection-background-color: #22577c; }
+QLabel { color: #cbd6e5; }
+QSplitter::handle { background: #34445b; }
+QScrollBar:vertical { background: #142031; width: 11px; }
+QScrollBar::handle:vertical { background: #405671; border-radius: 5px; min-height: 25px; }
+QScrollBar:horizontal { background: #142031; height: 11px; }
+QScrollBar::handle:horizontal { background: #405671; border-radius: 5px; min-width: 25px; }
+QDialog, QMessageBox, QInputDialog, QFileDialog { background: #111827; }
+"""
 
 class ScanWorker(QObject):
     finished = Signal(object)
@@ -37,6 +71,7 @@ class Desktop(QMainWindow):
         super().__init__()
         self.setWindowTitle("PatchCounter · Desktop v0.4")
         self.resize(1200, 780)
+        self.setMinimumSize(900, 550)
         self.projects = []
         self.selected_project = None
         self.selected_file = None
@@ -46,6 +81,8 @@ class Desktop(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
         bar = QHBoxLayout()
         self.status = QLabel("Bereit")
         for label, callback in (
@@ -63,7 +100,7 @@ class Desktop(QMainWindow):
         layout.addWidget(self.status)
 
         splitter = QSplitter()
-        layout.addWidget(splitter)
+        layout.addWidget(splitter, 1)
         self.project_table = self.make_table(["ID", "Projekt", "Verzeichnis", "Status", "Quellen"])
         self.project_table.itemSelectionChanged.connect(self.select_project)
         splitter.addWidget(self.project_table)
@@ -274,6 +311,20 @@ class Desktop(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor("#111827"))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#e5eaf3"))
+    palette.setColor(QPalette.ColorRole.Base, QColor("#151f2e"))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor("#1b2839"))
+    palette.setColor(QPalette.ColorRole.Text, QColor("#e5eaf3"))
+    palette.setColor(QPalette.ColorRole.Button, QColor("#24364d"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#eef4ff"))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor("#22577c"))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#8292a8"))
+    app.setPalette(palette)
+    app.setStyleSheet(DARK_STYLE)
     window = Desktop()
     window.show()
     return app.exec()
