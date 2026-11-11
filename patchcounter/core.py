@@ -56,7 +56,7 @@ def db_connect(path):
     return db
 
 TEXT_TIMESTAMP = re.compile(
-    r'^\\[?(\\d{4}-\\d{2}-\\d{2}[ T]\\d{2}:\\d{2}:\\d{2}(?:[.,]\\d{1,6})?(?:Z|[+-]\\d{2}:?\\d{2})?)\\]?'
+    r'^\[?(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?)\]?'
 )
 
 def text_timestamp(raw):
@@ -66,7 +66,15 @@ def text_timestamp(raw):
     value = match.group(1).replace(' ', 'T').replace(',', '.')
     if value.endswith('Z'):
         value = value[:-1] + '+00:00'
-    if re.search(r'[+-]\\d{4}
+    if re.search(r'[+-]\d{4}\Z', value):
+        value = value[:-5] + value[-5:-2] + ':' + value[-2:]
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+def parse_line(line):
     raw = line.strip()
     if not raw:
         return None
