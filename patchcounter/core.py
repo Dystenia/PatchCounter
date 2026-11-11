@@ -52,6 +52,7 @@ def db_connect(path):
     columns = {r['name'] for r in db.execute('PRAGMA table_info(events)')}
     if 'project_id' not in columns:
         db.execute('ALTER TABLE events ADD COLUMN project_id INTEGER')
+    db.commit()  # Finish any legacy project_id migration before BEGIN IMMEDIATE.
     event_columns = {r['name'] for r in db.execute('PRAGMA table_info(events)')}
     if 'generation' not in event_columns:
         # SQLite cannot drop the legacy UNIQUE(source_file, source_line) constraint.
