@@ -270,6 +270,6 @@ def read_raw_lines(db, path, start=1, limit=200):
         raise ValueError('Invalid line range')
     candidate = verified_log_path(db, path)
     with candidate.open('r', encoding='utf-8-sig', errors='replace') as handle:
-        lines = [{'number':i, 'text':line.rstrip('\\r\\n')[:10000]}
+        lines = [{'number':i, 'text':line.rstrip(chr(13)+chr(10))[:10000]}
                  for i,line in enumerate(islice(handle, start-1, start-1+limit),start)]
     return {'path':str(candidate),'start':start,'lines':lines,'has_more':len(lines)==limit}
