@@ -52,6 +52,39 @@ def db_connect(path):
     columns = {r['name'] for r in db.execute('PRAGMA table_info(events)')}
     if 'project_id' not in columns:
         db.execute('ALTER TABLE events ADD COLUMN project_id INTEGER')
+    db.commit()  # Finish any legacy project_id migration before BEGIN IMMEDIATE.
+    event_columns = {r['name'] for r in db.execute('PRAGMA table_info(events)')}
+    if 'generation' not in event_columns:
+        # SQLite cannot drop the legacy UNIQUE(source_file, source_line) constraint.
+        # Rebuild the table while preserving event IDs and all historical rows.
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            db.execute('''CREATE TABLE events_next (
+                id INTEGER PRIMARY KEY, ts TEXT NOT NULL, level TEXT NOT NULL,
+                source TEXT NOT NULL, message TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                source_file TEXT, source_line INTEGER, project_id INTEGER,
+                generation INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(source_file, generation, source_line)
+            )''')
+            db.execute('''INSERT INTO events_next
+                (id,ts,level,source,message,fingerprint,source_file,source_line,project_id,generation)
+                SELECT id,ts,level,source,message,fingerprint,source_file,source_line,project_id,0
+                FROM events''')
+            db.execute('DROP TABLE events')
+            db.execute('ALTER TABLE events_next RENAME TO events')
+            db.execute('CREATE INDEX idx_events_fingerprint ON events(fingerprint)')
+            db.execute('CREATE INDEX idx_events_ts ON events(ts)')
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+    cursor_columns = {r['name'] for r in db.execute('PRAGMA table_info(source_cursors)')}
+    if 'generation' not in cursor_columns:
+        db.execute('ALTER TABLE source_cursors ADD COLUMN generation INTEGER NOT NULL DEFAULT 0')
+    if 'head_hash' not in cursor_columns:
+        db.execute('ALTER TABLE source_cursors ADD COLUMN head_hash TEXT')
+    if 'head_size' not in cursor_columns:
+        db.execute('ALTER TABLE source_cursors ADD COLUMN head_size INTEGER NOT NULL DEFAULT 0')
     db.commit()
     return db
 
@@ -146,7 +179,7 @@ def log_records(handle):
             for offset, raw in enumerate(block):
                 yield number + offset, parse_line(raw)
 
-def import_file(db, filename, project_id=None):
+def import_file(db, filename, project_id=None, generation=0):
     filename = Path(filename).resolve()
     if not filename.is_file():
         raise FileNotFoundError(filename)
@@ -157,13 +190,13 @@ def import_file(db, filename, project_id=None):
                 continue
             event['fingerprint'] = fingerprint(event['source'], event['message'])
             cur = db.execute('''INSERT OR IGNORE INTO events
-                (ts,level,source,message,fingerprint,source_file,source_line,project_id)
-                VALUES (:ts,:level,:source,:message,:fingerprint,:source_file,:source_line,:project_id)''',
-                {**event, 'source_file': str(filename), 'source_line': line_number, 'project_id': project_id})
+                (ts,level,source,message,fingerprint,source_file,source_line,project_id,generation)
+                VALUES (:ts,:level,:source,:message,:fingerprint,:source_file,:source_line,:project_id,:generation)''',
+                {**event, 'source_file': str(filename), 'source_line': line_number, 'project_id': project_id, 'generation': generation})
             count += cur.rowcount
             if project_id is not None and not cur.rowcount:
-                db.execute('UPDATE events SET project_id=COALESCE(project_id,?) WHERE source_file=? AND source_line=?',
-                           (project_id, str(filename), line_number))
+                db.execute('UPDATE events SET project_id=COALESCE(project_id,?) WHERE source_file=? AND source_line=? AND generation=?',
+                           (project_id, str(filename), line_number, generation))
     return count
 
 def get_events(db, level=None, limit=100, project_id=None):
@@ -255,8 +288,13 @@ def delete_source(db, source_id):
         cur = db.execute('DELETE FROM log_sources WHERE id=?', (source_id,))
     return bool(cur.rowcount)
 
+def file_head(path, size=4096):
+    with path.open('rb') as handle:
+        data = handle.read(size)
+    return hashlib.sha256(data).hexdigest(), len(data)
+
 def scan_sources(db, max_files=2000):
-    """Poll enabled sources. Re-import changed files; duplicate lines are ignored."""
+    """Poll enabled sources and preserve events across truncation or rotation."""
     added, errors, seen = 0, [], 0
     sources = db.execute('''SELECT s.*,p.enabled AS project_enabled FROM log_sources s
                             JOIN projects p ON p.id=s.project_id WHERE s.enabled=1 AND p.enabled=1''').fetchall()
@@ -272,16 +310,35 @@ def scan_sources(db, max_files=2000):
                 seen += 1
                 stat = path.stat()
                 resolved = str(path.resolve())
-                previous = db.execute('SELECT file_size,file_mtime_ns FROM source_cursors WHERE source_id=? AND file_path=?',
-                                      (source['id'],resolved)).fetchone()
-                if previous and previous['file_size']==stat.st_size and previous['file_mtime_ns']==stat.st_mtime_ns:
+                previous = db.execute('''SELECT file_size,file_mtime_ns,generation,head_hash,head_size
+                    FROM source_cursors WHERE source_id=? AND file_path=?''',
+                    (source['id'], resolved)).fetchone()
+                if previous and previous['file_size'] == stat.st_size and previous['file_mtime_ns'] == stat.st_mtime_ns:
                     continue
-                added += import_file(db,path,source['project_id'])
+                current_hash, current_size = file_head(path)
+                generation = previous['generation'] if previous else 0
+                if previous and previous['head_hash']:
+                    # Compare the old sampled prefix, even if the file has grown.
+                    with path.open('rb') as handle:
+                        prefix = handle.read(previous['head_size'])
+                    same_prefix = (len(prefix) == previous['head_size'] and
+                                   hashlib.sha256(prefix).hexdigest() == previous['head_hash'])
+                    if stat.st_size < previous['file_size'] or not same_prefix:
+                        generation = max(generation, db.execute(
+                            'SELECT COALESCE(MAX(generation),0) FROM events WHERE source_file=?',
+                            (resolved,)).fetchone()[0]) + 1
+                # Old cursors have no signature: preserve their historical generation
+                # on the first upgraded scan, without duplicating existing lines.
+                imported = import_file(db, path, source['project_id'], generation=generation)
+                added += imported
                 with db:
-                    db.execute('''INSERT INTO source_cursors(source_id,file_path,file_size,file_mtime_ns,line_count)
-                        VALUES(?,?,?,?,0) ON CONFLICT(source_id,file_path) DO UPDATE SET
-                        file_size=excluded.file_size,file_mtime_ns=excluded.file_mtime_ns''',
-                        (source['id'],resolved,stat.st_size,stat.st_mtime_ns))
+                    db.execute('''INSERT INTO source_cursors
+                        (source_id,file_path,file_size,file_mtime_ns,line_count,generation,head_hash,head_size)
+                        VALUES(?,?,?,?,0,?,?,?) ON CONFLICT(source_id,file_path) DO UPDATE SET
+                        file_size=excluded.file_size,file_mtime_ns=excluded.file_mtime_ns,
+                        generation=excluded.generation,head_hash=excluded.head_hash,
+                        head_size=excluded.head_size''',
+                        (source['id'],resolved,stat.st_size,stat.st_mtime_ns,generation,current_hash,current_size))
         except (OSError, UnicodeError) as exc:
             errors.append({'source_id':source['id'],'error':str(exc)})
     return {'imported':added,'scanned':seen,'errors':errors,'limited':False}
