@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from .core import (
     db_connect, import_file, get_events, get_groups, add_patch,
     list_projects, create_project, update_project, delete_project,
-    add_source, update_source, delete_source, scan_sources,
+    add_source, update_source, delete_source, scan_sources, list_log_files, file_events,
 )
 
 DB_PATH = Path(os.environ.get("PATCHCOUNTER_DB", str(Path.home() / ".patchcounter" / "events.db")))
@@ -94,6 +94,16 @@ pre{white-space:pre-wrap} .status{min-height:20px}
 <section class="panel"><h2>Log-Ereignisse</h2>
 <div class="row"><select id="filter" onchange="refreshLogs()"><option value="">Alle Projekte</option></select>
 <button onclick="scanNow()">Jetzt scannen</button></div>
+<h3>Logdateien</h3><p class="muted">Klicke eine Datei an, um ihre importierten Meldungen zu lesen.</p>
+<div id="files"></div>
+<div id="filepanel" class="card" style="display:none">
+<h3 id="filename">Datei</h3><p class="muted" id="filepath"></p>
+<div class="row"><select id="filelevel" onchange="loadFileEvents()"><option value="">Alle Level</option><option>ERROR</option><option>WARNING</option><option>CRITICAL</option><option>INFO</option><option>DEBUG</option></select>
+<input id="filesearch" placeholder="Meldungen durchsuchen" oninput="loadFileEvents()">
+<button onclick="closeFile()">Schließen</button></div>
+<table><thead><tr><th>Zeile</th><th>Zeit</th><th>Level</th><th>Meldung (anklicken)</th></tr></thead><tbody id="fileevents"></tbody></table>
+<div id="detail" class="card" style="display:none"><h4>Meldungsdetails</h4><pre id="detailtext"></pre></div>
+</div>
 <h3>Fehlergruppen</h3><table><thead><tr><th>Modul</th><th>Level</th><th>Anzahl</th><th>Beispiel</th></tr></thead><tbody id="groups"></tbody></table>
 <h3>Letzte Ereignisse</h3><table><thead><tr><th>Zeit</th><th>Level</th><th>Quelle</th><th>Meldung</th></tr></thead><tbody id="events"></tbody></table></section>
 <section class="panel"><h2>Einzeldatei importieren</h2><div class="row"><input id="manual" placeholder="Vollständiger Pfad zur Logdatei">
@@ -103,7 +113,7 @@ const $=id=>document.getElementById(id);
 const esc=x=>String(x??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const req=async(url,method='GET',body)=>{const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});const j=await r.json();if(!r.ok)throw Error(j.detail||r.statusText);return j};
 const msg=x=>$('status').textContent=x;
-async function act(fn){try{await fn();msg('Gespeichert.');await loadProjects();await refreshLogs()}catch(e){msg('Fehler: '+e.message)}}
+async function act(fn){try{await fn();msg('Gespeichert.');await loadProjects();await refreshLogs();await refreshFiles()}catch(e){msg('Fehler: '+e.message)}}
 async function createProject(){await act(()=>req('/api/projects','POST',{name:$('pname').value,root:$('proot').value}));$('pname').value=''}
 async function editProject(p){const name=prompt('Projektname',p.name);if(name===null)return;const root=prompt('Projektverzeichnis',p.root);if(root===null)return;await act(()=>req('/api/projects/'+p.id,'PUT',{name,root,enabled:p.enabled}))}
 async function toggleProject(p){await act(()=>req('/api/projects/'+p.id,'PUT',{name:p.name,root:p.root,enabled:!p.enabled}))}
@@ -112,7 +122,27 @@ async function addSourceUI(p){const directory=prompt('Logverzeichnis',p.root);if
 async function editSource(s){const directory=prompt('Logverzeichnis',s.directory);if(directory===null)return;const pattern=prompt('Dateimuster',s.pattern);if(pattern===null)return;const recursive=confirm('Unterordner einbeziehen? OK = Ja, Abbrechen = Nein');await act(()=>req('/api/sources/'+s.id,'PUT',{directory,pattern,recursive,enabled:!!s.enabled}))}
 async function toggleSource(s){await act(()=>req('/api/sources/'+s.id,'PUT',{directory:s.directory,pattern:s.pattern,recursive:!!s.recursive,enabled:!s.enabled}))}
 async function removeSource(s){if(confirm('Logquelle entfernen?'))await act(()=>req('/api/sources/'+s.id,'DELETE'))}
-let projects=[];
+let projects=[];let selectedFile=null;let fileRows=[];
+function closeFile(){selectedFile=null;$('filepanel').style.display='none'}
+function showDetail(id){const e=fileRows.find(x=>x.id===id);if(!e)return;$('detail').style.display='block';$('detailtext').textContent='Datei: '+e.source_file+'\nZeile: '+e.source_line+'\nZeit: '+e.ts+'\nLevel: '+e.level+'\nQuelle: '+e.source+'\nFingerprint: '+e.fingerprint+'\n\n'+e.message}
+async function openFile(path,projectId){selectedFile={path,projectId};$('filename').textContent=path.split(/[\\/]/).pop();$('filepath').textContent=path;$('filepanel').style.display='block';$('detail').style.display='none';await loadFileEvents()}
+async function loadFileEvents(){if(!selectedFile)return;try{
+const q=new URLSearchParams({path:selectedFile.path,limit:'300'});
+if(selectedFile.projectId!==null)q.set('project_id',selectedFile.projectId);
+if($('filelevel').value)q.set('level',$('filelevel').value);
+if($('filesearch').value)q.set('search',$('filesearch').value);
+fileRows=await req('/api/file-events?'+q);
+const target=$('fileevents');target.replaceChildren();
+for(const e of fileRows){const tr=document.createElement('tr');
+for(const value of [e.source_line,e.ts,e.level,e.message]){const td=document.createElement('td');td.textContent=value;tr.append(td)}
+tr.style.cursor='pointer';tr.onclick=()=>showDetail(e.id);target.append(tr)}
+}catch(e){msg(e.message)}}
+async function refreshFiles(){try{const q=$('filter').value?'?project_id='+encodeURIComponent($('filter').value):'';
+const files=await req('/api/files'+q);const target=$('files');target.replaceChildren();
+for(const f of files){const b=document.createElement('button');b.style.margin='4px';b.textContent=f.path.split(/[\\/]/).pop()+' · '+f.events+' Meldungen · '+f.errors+' Fehler';b.title=f.path;b.onclick=()=>openFile(f.path,f.project_id);target.append(b)}
+if(!files.length)target.textContent='Noch keine importierten Logdateien.';
+}catch(e){msg(e.message)}}
+
 async function loadProjects(){
 projects=await req('/api/projects');const selected=$('filter').value;
 $('filter').innerHTML='<option value="">Alle Projekte</option>'+projects.map(p=>'<option value="'+p.id+'">'+esc(p.name)+'</option>').join('');
@@ -141,8 +171,8 @@ $('events').innerHTML=e.map(x=>'<tr><td>'+esc(x.ts)+'</td><td>'+esc(x.level)+'</
 }catch(e){msg(e.message)}}
 async function scanNow(){await act(async()=>{const r=await req('/api/scan','POST');msg(r.imported+' Ereignisse importiert')})}
 async function manualImport(){await act(()=>req('/api/import','POST',{path:$('manual').value}))}
-loadProjects().then(refreshLogs).catch(e=>msg(e.message));
-setInterval(refreshLogs,5000);
+loadProjects().then(async()=>{await refreshLogs();await refreshFiles()}).catch(e=>msg(e.message));
+setInterval(async()=>{await refreshLogs();await refreshFiles();if(selectedFile)await loadFileEvents()},5000);
 </script>"""
 
 @app.get("/api/events")
@@ -230,3 +260,14 @@ def source_delete(source_id: int):
 @app.post("/api/scan")
 def scan():
     return poll_once()
+
+@app.get("/api/files")
+def files(project_id: int | None = None):
+    with db_connect(DB_PATH) as db:
+        return list_log_files(db, project_id)
+
+@app.get("/api/file-events")
+def file_messages(path: str, project_id: int | None = None,
+                  level: str | None = None, search: str | None = None, limit: int = 300):
+    with db_connect(DB_PATH) as db:
+        return file_events(db, path, project_id, level, search, limit)
