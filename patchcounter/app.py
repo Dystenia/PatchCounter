@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sqlite3
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
@@ -9,7 +10,7 @@ from pydantic import BaseModel
 from .core import (
     db_connect, import_file, get_events, get_groups, add_patch,
     list_projects, create_project, update_project, delete_project,
-    add_source, update_source, delete_source, scan_sources, list_log_files, file_events,
+    add_source, update_source, delete_source, scan_sources, list_log_files, file_events, read_raw_lines, verified_log_path,
 )
 
 DB_PATH = Path(os.environ.get("PATCHCOUNTER_DB", str(Path.home() / ".patchcounter" / "events.db")))
@@ -100,8 +101,12 @@ pre{white-space:pre-wrap} .status{min-height:20px}
 <h3 id="filename">Datei</h3><p class="muted" id="filepath"></p>
 <div class="row"><select id="filelevel" onchange="loadFileEvents()"><option value="">Alle Level</option><option>ERROR</option><option>WARNING</option><option>CRITICAL</option><option>INFO</option><option>DEBUG</option></select>
 <input id="filesearch" placeholder="Meldungen durchsuchen" oninput="loadFileEvents()">
-<button onclick="closeFile()">Schließen</button></div>
+<button onclick="showRaw()">Rohlog anzeigen</button><button onclick="openEditor()">Im Editor öffnen</button><button onclick="closeFile()">Schließen</button></div>
 <table><thead><tr><th>Zeile</th><th>Zeit</th><th>Level</th><th>Meldung (anklicken)</th></tr></thead><tbody id="fileevents"></tbody></table>
+<div id="rawpanel" class="card" style="display:none"><h4>Originaldatei (schreibgeschützt)</h4>
+<div class="row"><button onclick="rawPage(-1)">Vorherige 200</button><span id="rawrange"></span><button onclick="rawPage(1)">Nächste 200</button>
+<input id="rawsearch" placeholder="Auf dieser Seite suchen" oninput="renderRaw()"></div>
+<pre id="rawcontent" style="max-height:500px;overflow:auto;white-space:pre-wrap"></pre></div>
 <div id="detail" class="card" style="display:none"><h4>Meldungsdetails</h4><pre id="detailtext"></pre></div>
 </div>
 <h3>Fehlergruppen</h3><table><thead><tr><th>Modul</th><th>Level</th><th>Anzahl</th><th>Beispiel</th></tr></thead><tbody id="groups"></tbody></table>
@@ -123,9 +128,16 @@ async function editSource(s){const directory=prompt('Logverzeichnis',s.directory
 async function toggleSource(s){await act(()=>req('/api/sources/'+s.id,'PUT',{directory:s.directory,pattern:s.pattern,recursive:!!s.recursive,enabled:!s.enabled}))}
 async function removeSource(s){if(confirm('Logquelle entfernen?'))await act(()=>req('/api/sources/'+s.id,'DELETE'))}
 let projects=[];let selectedFile=null;let fileRows=[];
-function closeFile(){selectedFile=null;$('filepanel').style.display='none'}
+function closeFile(){selectedFile=null;$('filepanel').style.display='none';$('rawpanel').style.display='none'}
+let rawStart=1,rawLines=[],rawMore=false;
+async function showRaw(){rawStart=1;$('rawpanel').style.display='block';await loadRaw()}
+async function rawPage(direction){rawStart=Math.max(1,rawStart+direction*200);await loadRaw()}
+function renderRaw(){const term=$('rawsearch').value.toLowerCase();$('rawcontent').textContent=rawLines.filter(x=>!term||x.text.toLowerCase().includes(term)).map(x=>String(x.number).padStart(6,' ')+' | '+x.text).join(String.fromCharCode(10))}
+async function loadRaw(){if(!selectedFile)return;try{const q=new URLSearchParams({path:selectedFile.path,start:rawStart,limit:200});const data=await req('/api/raw-log?'+q);rawLines=data.lines;rawMore=data.has_more;$('rawrange').textContent='Ab Zeile '+rawStart+(rawMore?' · weitere Zeilen möglich':' · Dateiende');renderRaw()}catch(e){msg('Rohlog: '+e.message)}}
+async function openEditor(){if(!selectedFile)return;if(!confirm('Originaldatei im Windows-Standardeditor öffnen?'))return;try{await req('/api/open-editor','POST',{path:selectedFile.path});msg('Editor-Start angefordert.')}catch(e){msg(e.message)}}
+
 function showDetail(id){const e=fileRows.find(x=>x.id===id);if(!e)return;$('detail').style.display='block';$('detailtext').textContent=['Datei: '+e.source_file,'Zeile: '+e.source_line,'Zeit: '+e.ts,'Level: '+e.level,'Quelle: '+e.source,'Fingerprint: '+e.fingerprint,'',e.message].join(String.fromCharCode(10))}
-async function openFile(path,projectId){selectedFile={path,projectId};$('filename').textContent=path.replaceAll(String.fromCharCode(92),'/').split('/').pop();$('filepath').textContent=path;$('filepanel').style.display='block';$('detail').style.display='none';await loadFileEvents()}
+async function openFile(path,projectId){selectedFile={path,projectId};$('filename').textContent=path.replaceAll(String.fromCharCode(92),'/').split('/').pop();$('filepath').textContent=path;$('filepanel').style.display='block';$('detail').style.display='none';await loadFileEvents();if($('rawpanel').style.display!=='none')await loadRaw()}
 async function loadFileEvents(){if(!selectedFile)return;try{
 const q=new URLSearchParams({path:selectedFile.path,limit:'300'});
 if(selectedFile.projectId!==null)q.set('project_id',selectedFile.projectId);
@@ -271,3 +283,26 @@ def file_messages(path: str, project_id: int | None = None,
                   level: str | None = None, search: str | None = None, limit: int = 300):
     with db_connect(DB_PATH) as db:
         return file_events(db, path, project_id, level, search, limit)
+
+class FileAction(BaseModel):
+    path: str
+
+@app.get("/api/raw-log")
+def raw_log(path: str, start: int = 1, limit: int = 200):
+    try:
+        with db_connect(DB_PATH) as db:
+            return read_raw_lines(db, path, start, limit)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+
+@app.post("/api/open-editor")
+def open_editor(req: FileAction):
+    if sys.platform != "win32":
+        raise HTTPException(501, "External editor is currently supported on Windows only")
+    try:
+        with db_connect(DB_PATH) as db:
+            path = verified_log_path(db, req.path)
+        os.startfile(str(path), "open")
+        return {"ok": True}
+    except (ValueError, OSError) as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
