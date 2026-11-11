@@ -374,7 +374,7 @@ class Desktop(QMainWindow):
         self.update_toggle_buttons()
 
     def update_toggle_buttons(self):
-        """Color the next action: green to activate, red to pause."""
+        """Show the current status: green active, red paused."""
         project = next((p for p in self.projects if p["id"] == self.selected_project), None)
         self.style_toggle(self.project_toggle_button, "Projekt", project)
         row = self.source_table.currentRow()
@@ -390,8 +390,8 @@ class Desktop(QMainWindow):
             return
         active = bool(item["enabled"])
         button.setEnabled(True)
-        button.setText(f"{noun} pausieren" if active else f"{noun} aktivieren")
-        base, hover = ("#9b303b", "#b43d49") if active else ("#22734b", "#2d9160")
+        button.setText(f"{noun} aktiv" if active else f"{noun} pausiert")
+        base, hover = ("#22734b", "#2d9160") if active else ("#9b303b", "#b43d49")
         button.setStyleSheet(
             f"QPushButton {{ background: {base}; color: white; border: 1px solid {base}; "
             "border-radius: 6px; padding: 8px 12px; }"
