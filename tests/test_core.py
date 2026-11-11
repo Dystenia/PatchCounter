@@ -11,6 +11,20 @@ class CoreTests(unittest.TestCase):
     def test_text_line(self):
         self.assertEqual(parse_line('2026-01-01 ERROR failed')['level'], 'ERROR')
 
+    def test_text_timestamp_from_log(self):
+        event = parse_line('2026-11-11 06:01:00 ERROR Testfehler Nummer 2')
+        self.assertEqual(event['ts'], '2026-11-11T06:01:00')
+        self.assertEqual(event['level'], 'ERROR')
+
+    def test_text_timestamp_with_timezone(self):
+        event = parse_line('[2026-11-11T06:01:00.123+0100] WARNING message')
+        self.assertEqual(event['ts'], '2026-11-11T06:01:00.123+01:00')
+
+    def test_invalid_text_timestamp_falls_back(self):
+        event = parse_line('2026-99-99 06:01:00 ERROR bad date')
+        self.assertNotIn('2026-99-99', event['ts'])
+        self.assertEqual(event['level'], 'ERROR')
+
     def test_import_deduplicates_source_lines(self):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder) / 'events.log'
