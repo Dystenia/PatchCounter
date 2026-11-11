@@ -40,6 +40,35 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(scan_sources(self.db)['imported'], 0)
         self.assertTrue(delete_source(self.db, source_id))
 
+    def test_rotation_preserves_history(self):
+        project_id = create_project(self.db, 'Rotation', str(self.root))
+        add_source(self.db, project_id, str(self.root), '*.log', False)
+        update_project(self.db, project_id, 'Rotation', str(self.root), True)
+        log = self.root / 'rotate.log'
+        log.write_text('ERROR old first\nERROR old second\n', encoding='utf-8')
+        self.assertEqual(scan_sources(self.db)['imported'], 2)
+        log.write_text('ERROR new\n', encoding='utf-8')
+        self.assertEqual(scan_sources(self.db)['imported'], 1)
+        self.assertEqual(scan_sources(self.db)['imported'], 0)
+        rows = list(self.db.execute(
+            'SELECT generation,source_line,message FROM events ORDER BY id'))
+        self.assertEqual([(r['generation'],r['source_line']) for r in rows],
+                         [(0,1),(0,2),(1,1)])
+        self.assertEqual(rows[-1]['message'], 'ERROR new')
+
+    def test_same_size_replacement_and_append(self):
+        project_id = create_project(self.db, 'Replace', str(self.root))
+        add_source(self.db, project_id, str(self.root), '*.log', False)
+        update_project(self.db, project_id, 'Replace', str(self.root), True)
+        log = self.root / 'replace.log'
+        log.write_text('ERROR alpha\n', encoding='utf-8')
+        self.assertEqual(scan_sources(self.db)['imported'], 1)
+        log.write_text('ERROR bravo\n', encoding='utf-8')
+        self.assertEqual(scan_sources(self.db)['imported'], 1)
+        log.write_text('ERROR bravo\nERROR charlie\n', encoding='utf-8')
+        self.assertEqual(scan_sources(self.db)['imported'], 1)
+        self.assertEqual(len(get_events(self.db, project_id=project_id)), 3)
+
     def test_pause_project(self):
         project_id = create_project(self.db, 'Paused', str(self.root))
         add_source(self.db, project_id, str(self.root), '*.log')
