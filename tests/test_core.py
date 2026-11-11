@@ -35,6 +35,36 @@ class CoreTests(unittest.TestCase):
                 self.assertEqual(len(get_events(db)), 2)
                 self.assertEqual(get_groups(db)[0]['occurrences'], 2)
 
+    def test_python_traceback_grouped_and_deduplicated(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'traceback.log'
+            path.write_text(
+                'INFO before\n'
+                'Traceback (most recent call last):\n'
+                '  File "worker.py", line 12, in run\n'
+                '    raise ValueError("bad")\n'
+                'ValueError: bad\n'
+                'INFO after\n', encoding='utf-8')
+            with closing(db_connect(Path(folder) / 'db.sqlite')) as db:
+                self.assertEqual(import_file(db, path), 3)
+                rows = list(db.execute('SELECT source_line, level, message FROM events ORDER BY source_line'))
+                self.assertEqual([row['source_line'] for row in rows], [1, 2, 6])
+                self.assertEqual(rows[1]['level'], 'ERROR')
+                self.assertIn('File "worker.py"', rows[1]['message'])
+                self.assertIn('ValueError: bad', rows[1]['message'])
+                self.assertEqual(import_file(db, path), 0)
+
+    def test_incomplete_traceback_keeps_lines(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / 'incomplete.log'
+            path.write_text(
+                'Traceback (most recent call last):\n'
+                '  File "worker.py", line 12, in run\n'
+                'INFO next event\n', encoding='utf-8')
+            with closing(db_connect(Path(folder) / 'db.sqlite')) as db:
+                self.assertEqual(import_file(db, path), 3)
+                self.assertEqual([r['source_line'] for r in get_events(db)], [3, 2, 1])
+
     def test_patch_record(self):
         with tempfile.TemporaryDirectory() as folder:
             with closing(db_connect(Path(folder) / 'db.sqlite')) as db:
